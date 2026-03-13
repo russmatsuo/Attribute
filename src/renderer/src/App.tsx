@@ -34,6 +34,14 @@ declare global {
       getViewportSize: () => Promise<{ width: number; height: number }>
       onViewportSizeChanged: (callback: (size: { width: number; height: number }) => void) => () => void
       showSizePresets: () => Promise<void>
+      consolePreviewShow: (x: number, y: number, buttonWidth: number, mainHeight: number) => Promise<void>
+      consolePreviewHide: () => Promise<void>
+      consolePreviewUpdate: () => Promise<void>
+      consolePreviewIsVisible: () => Promise<boolean>
+      consolePreviewReposition: (x: number, y: number, buttonWidth: number, mainHeight: number) => Promise<void>
+      consolePreviewScheduleClose: () => Promise<void>
+      consolePreviewCancelClose: () => Promise<void>
+      onConsolePreviewLeave: (callback: () => void) => () => void
     }
   }
 }
@@ -70,6 +78,9 @@ export default function App() {
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const activeTabRef = useRef<number | null>(null)
+  const consoleButtonRef = useRef<HTMLButtonElement>(null)
+  const consoleHoverTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const [consolePreviewVisible, setConsolePreviewVisible] = useState(false)
 
   // Keep ref in sync for use inside onUrlChanged closure
   useEffect(() => { activeTabRef.current = activeTab }, [activeTab])
@@ -146,6 +157,29 @@ export default function App() {
     })
     return () => unsub?.()
   }, [])
+
+  // Listen for console preview leave events
+  useEffect(() => {
+    const unsub = window.api.onConsolePreviewLeave(() => {
+      setConsolePreviewVisible(false)
+    })
+    return () => unsub()
+  }, [])
+
+  // Reposition console preview on window resize
+  useEffect(() => {
+    const handleResize = async () => {
+      if (!consolePreviewVisible || !consoleButtonRef.current) return
+      const rect = consoleButtonRef.current.getBoundingClientRect()
+      // Use screen-absolute coords so main process doesn't need getBounds()
+      const screenX = window.screenX + rect.left
+      const screenY = window.screenY + rect.bottom
+      const mainHeight = window.innerHeight
+      await window.api.consolePreviewReposition(screenX, screenY, rect.width, mainHeight)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [consolePreviewVisible])
 
   useEffect(() => {
     const unsubUrl = window.api.onUrlChanged((newUrl) => {
@@ -292,13 +326,45 @@ export default function App() {
     }
   }, [])
 
+  const handleConsoleMouseEnter = useCallback(() => {
+    // Cancel any pending close scheduled by a previous leave
+    window.api.consolePreviewCancelClose()
+    if (consoleHoverTimerRef.current) {
+      clearTimeout(consoleHoverTimerRef.current)
+    }
+    consoleHoverTimerRef.current = setTimeout(async () => {
+      const button = consoleButtonRef.current
+      if (!button) return
+      const rect = button.getBoundingClientRect()
+      // Use screen-absolute coords so main process doesn't need getBounds()
+      const screenX = window.screenX + rect.left
+      const screenY = window.screenY + rect.bottom
+      const mainHeight = window.innerHeight
+      await window.api.consolePreviewShow(screenX, screenY, rect.width, mainHeight)
+      setConsolePreviewVisible(true)
+    }, 100)
+  }, [])
+
+  const handleConsoleMouseLeave = useCallback(() => {
+    if (consoleHoverTimerRef.current) {
+      clearTimeout(consoleHoverTimerRef.current)
+      consoleHoverTimerRef.current = null
+    }
+    // Schedule close — cancelled if cursor enters the preview window within 300ms
+    window.api.consolePreviewScheduleClose()
+  }, [])
+
   const handleCopyLogs = useCallback(async () => {
     const logs = await window.api.getConsoleLogs()
     const header = `Here's the current console output on ${url}. Use it to debug any issues. Add logging to help solve what's not working.\n\n`
     await navigator.clipboard.writeText(header + (logs || '(no console output)'))
     setLogsCopied(true)
     setTimeout(() => setLogsCopied(false), 2000)
-  }, [url])
+    // Update preview if visible
+    if (consolePreviewVisible) {
+      await window.api.consolePreviewUpdate()
+    }
+  }, [url, consolePreviewVisible])
 
   const handleDragStart = useCallback((index: number, e: React.DragEvent) => {
     setDragIndex(index)
@@ -649,8 +715,11 @@ export default function App() {
             <span className="material-symbols-rounded">screenshot_monitor</span>
           </button>
           <button
+            ref={consoleButtonRef}
             className={`nav-btn nav-btn--copyable${logsCopied ? ' nav-btn--copied' : ''}`}
             onClick={handleCopyLogs}
+            onMouseEnter={handleConsoleMouseEnter}
+            onMouseLeave={handleConsoleMouseLeave}
             title="Copy Console"
           >
             <span className="material-symbols-rounded">{logsCopied ? 'check' : 'terminal'}</span>

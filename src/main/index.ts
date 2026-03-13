@@ -3,11 +3,26 @@ import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { geminiGenerate } from './gemini'
+import {
+  initConsolePreview,
+  showConsolePreview,
+  hideConsolePreview,
+  updateConsolePreview,
+  isConsolePreviewVisible,
+  handlePreviewMouseLeave,
+  handlePreviewMouseEnter,
+  handlePreviewContentHeight,
+  repositionConsolePreview,
+  destroyConsolePreview,
+  scheduleCloseFromButton,
+  cancelCloseFromButton
+} from './consolePreview'
 
 let mainWindow: BrowserWindow | null = null
 let targetView: BrowserView | null = null
 let unpinnedTabCount = 0
 let consoleLogs: string[] = []
+let consoleButtonBounds: { viewportX: number; viewportY: number; width: number } | null = null
 const MAX_CONSOLE_LOGS = 500
 
 // Simple JSON file store (replaces electron-store to avoid ESM issues)
@@ -47,6 +62,7 @@ function createWindow(): void {
     minWidth: 320,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 12, y: 17 },
+    acceptFirstMouse: true,
     backgroundColor: '#0e0e0e',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -109,6 +125,8 @@ function createWindow(): void {
       if (consoleLogs.length > MAX_CONSOLE_LOGS) {
         consoleLogs = consoleLogs.slice(-MAX_CONSOLE_LOGS)
       }
+      // Update preview if visible
+      updateConsolePreview(consoleLogs.join('\n'))
     }
     if (method === 'Runtime.exceptionThrown') {
       const desc = params.exceptionDetails?.exception?.description || params.exceptionDetails?.text || 'Unknown error'
@@ -116,6 +134,8 @@ function createWindow(): void {
       if (consoleLogs.length > MAX_CONSOLE_LOGS) {
         consoleLogs = consoleLogs.slice(-MAX_CONSOLE_LOGS)
       }
+      // Update preview if visible
+      updateConsolePreview(consoleLogs.join('\n'))
     }
   })
 
@@ -142,7 +162,21 @@ function createWindow(): void {
     injectOverlay()
   })
 
-  mainWindow.on('resize', layoutViews)
+  mainWindow.on('resize', () => {
+    layoutViews()
+    // Update console preview max height on resize
+    if (isConsolePreviewVisible() && consoleButtonBounds && mainWindow) {
+      repositionConsolePreview(
+        consoleButtonBounds.viewportX,
+        consoleButtonBounds.viewportY,
+        consoleButtonBounds.width,
+        mainWindow.getContentSize()[1]
+      )
+    }
+  })
+
+  // Initialize console preview module
+  initConsolePreview(mainWindow)
 
   mainWindow.on('close', (event) => {
     if (unpinnedTabCount > 0) {
@@ -164,6 +198,7 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null
     targetView = null
+    destroyConsolePreview()
   })
 }
 
@@ -449,6 +484,119 @@ ipcMain.handle(
     }
   }
 )
+
+// IPC: Console preview — show
+ipcMain.handle(
+  'console-preview-show',
+  (_event, viewportX: number, viewportY: number, buttonWidth: number, mainHeight: number) => {
+    if (!mainWindow) return
+    consoleButtonBounds = { viewportX, viewportY, width: buttonWidth }
+    const logs = consoleLogs.join('\n')
+    showConsolePreview(viewportX, viewportY, buttonWidth, mainHeight, logs, () => {
+      mainWindow?.webContents.send('console-preview-leave')
+    })
+  }
+)
+
+// IPC: Console preview — hide
+ipcMain.handle('console-preview-hide', () => {
+  hideConsolePreview()
+})
+
+// IPC: Console preview — update
+ipcMain.handle('console-preview-update', () => {
+  const logs = consoleLogs.join('\n')
+  updateConsolePreview(logs)
+})
+
+// IPC: Console preview — check visibility
+ipcMain.handle('console-preview-is-visible', () => {
+  return isConsolePreviewVisible()
+})
+
+// IPC: Console preview — reposition on resize
+ipcMain.handle(
+  'console-preview-reposition',
+  (_event, viewportX: number, viewportY: number, buttonWidth: number, mainHeight: number) => {
+    consoleButtonBounds = { viewportX, viewportY, width: buttonWidth }
+    repositionConsolePreview(viewportX, viewportY, buttonWidth, mainHeight)
+  }
+)
+
+// IPC from preview window — mouse leave
+ipcMain.on('console-preview-mouse-leave', () => {
+  handlePreviewMouseLeave()
+})
+
+// IPC from preview window — mouse enter
+ipcMain.on('console-preview-mouse-enter', () => {
+  handlePreviewMouseEnter()
+})
+
+// IPC from main renderer — button mouse leave (schedule close unless preview captures cursor)
+ipcMain.handle('console-preview-schedule-close', () => {
+  scheduleCloseFromButton()
+})
+
+// IPC from main renderer — button mouse enter (cancel any pending close)
+ipcMain.handle('console-preview-cancel-close', () => {
+  cancelCloseFromButton()
+})
+
+// IPC from preview window — content height update
+ipcMain.on('console-preview-content-height', (_event, height: number) => {
+  handlePreviewContentHeight(height)
+})
+
+// IPC from preview window — execute command
+ipcMain.on('console-preview-command', async (_event, command: string) => {
+  if (!targetView) return
+  
+  // Add command to logs (just the input with > prefix)
+  consoleLogs.push(`> ${command}`)
+  if (consoleLogs.length > MAX_CONSOLE_LOGS) {
+    consoleLogs = consoleLogs.slice(-MAX_CONSOLE_LOGS)
+  }
+  
+  // Update preview with command
+  updateConsolePreview(consoleLogs.join('\n'))
+  
+  try {
+    const result = await targetView.webContents.debugger.sendCommand('Runtime.evaluate', {
+      expression: command,
+      returnByValue: true
+    })
+    
+    if (result.result) {
+      const value = result.result.value
+      const type = result.result.type
+      let output: string
+      
+      if (value === undefined) {
+        output = 'undefined'
+      } else if (typeof value === 'object') {
+        output = JSON.stringify(value, null, 2)
+      } else {
+        output = String(value)
+      }
+      
+      // Only show result if it's not undefined (undefined is implicit for statements)
+      if (output !== 'undefined') {
+        consoleLogs.push(output)
+      }
+    } else if (result.exceptionDetails) {
+      consoleLogs.push(`[error] ${result.exceptionDetails.text || 'Error'}`)
+    }
+  } catch (err) {
+    consoleLogs.push(`[error] ${String(err)}`)
+  }
+  
+  if (consoleLogs.length > MAX_CONSOLE_LOGS) {
+    consoleLogs = consoleLogs.slice(-MAX_CONSOLE_LOGS)
+  }
+  
+  updateConsolePreview(consoleLogs.join('\n'))
+})
 
 let apiKeyWindow: BrowserWindow | null = null
 

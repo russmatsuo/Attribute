@@ -48,6 +48,20 @@ const api = {
     const handler = () => callback()
     ipcRenderer.on('api-key-changed', handler)
     return () => ipcRenderer.removeListener('api-key-changed', handler)
+  },
+  consolePreviewShow: (x: number, y: number, buttonWidth: number, mainHeight: number) =>
+    ipcRenderer.invoke('console-preview-show', x, y, buttonWidth, mainHeight),
+  consolePreviewHide: () => ipcRenderer.invoke('console-preview-hide'),
+  consolePreviewUpdate: () => ipcRenderer.invoke('console-preview-update'),
+  consolePreviewIsVisible: () => ipcRenderer.invoke('console-preview-is-visible') as Promise<boolean>,
+  consolePreviewReposition: (x: number, y: number, buttonWidth: number, mainHeight: number) =>
+    ipcRenderer.invoke('console-preview-reposition', x, y, buttonWidth, mainHeight),
+  consolePreviewScheduleClose: () => ipcRenderer.invoke('console-preview-schedule-close'),
+  consolePreviewCancelClose: () => ipcRenderer.invoke('console-preview-cancel-close'),
+  onConsolePreviewLeave: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('console-preview-leave', handler)
+    return () => ipcRenderer.removeListener('console-preview-leave', handler)
   }
 }
 
