@@ -62,6 +62,16 @@ const api = {
     const handler = () => callback()
     ipcRenderer.on('console-preview-leave', handler)
     return () => ipcRenderer.removeListener('console-preview-leave', handler)
+  },
+  onDuplicateTab: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('duplicate-tab', handler)
+    return () => ipcRenderer.removeListener('duplicate-tab', handler)
+  },
+  onPageTitleChanged: (callback: (title: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, title: string) => callback(title)
+    ipcRenderer.on('page-title-changed', handler)
+    return () => ipcRenderer.removeListener('page-title-changed', handler)
   }
 }
 

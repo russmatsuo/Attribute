@@ -42,6 +42,8 @@ declare global {
       consolePreviewScheduleClose: () => Promise<void>
       consolePreviewCancelClose: () => Promise<void>
       onConsolePreviewLeave: (callback: () => void) => () => void
+      onDuplicateTab: (callback: () => void) => () => void
+      onPageTitleChanged: (callback: (title: string) => void) => () => void
     }
   }
 }
@@ -51,7 +53,7 @@ export default function App() {
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [customMode, setCustomMode] = useState(false)
-  const [tabs, setTabs] = useState<Array<{ url: string; pinned: boolean }>>([
+  const [tabs, setTabs] = useState<Array<{ url: string; pinned: boolean; title?: string }>>([
     { url: 'http://localhost:3000', pinned: true }
   ])
   const [activeTab, setActiveTab] = useState<number | null>(0)
@@ -79,6 +81,7 @@ export default function App() {
   const inputRef = useRef<HTMLInputElement>(null)
   const activeTabRef = useRef<number | null>(null)
   const tabsRef = useRef(tabs)
+  const urlRef = useRef(url)
   const consoleButtonRef = useRef<HTMLButtonElement>(null)
   const consoleHoverTimerRef = useRef<NodeJS.Timeout | null>(null)
   const [consolePreviewVisible, setConsolePreviewVisible] = useState(false)
@@ -86,6 +89,7 @@ export default function App() {
   // Keep refs in sync for use inside event listener closures
   useEffect(() => { activeTabRef.current = activeTab }, [activeTab])
   useEffect(() => { tabsRef.current = tabs }, [tabs])
+  useEffect(() => { urlRef.current = url }, [url])
 
   // Load pinned tabs from storage (replaces default if any saved)
   const tabsLoaded = useRef(false)
@@ -131,17 +135,6 @@ export default function App() {
             : 'window.__attributeHideSelection__ && window.__attributeHideSelection__()'
         })
       }
-      if (e.metaKey && e.key === 'd') {
-        e.preventDefault()
-        const idx = activeTabRef.current
-        if (idx === null) return
-        const url = tabsRef.current[idx]?.url
-        if (!url) return
-        const newIndex = tabsRef.current.length
-        setTabs((prev) => [...prev, { url, pinned: true }])
-        setActiveTab(newIndex)
-        navigateTo(url)
-      }
     }
     const up = (e: KeyboardEvent) => {
       if (e.key === 'Meta') {
@@ -178,6 +171,7 @@ export default function App() {
     })
     return () => unsub()
   }, [])
+
 
   // Reposition console preview on window resize
   useEffect(() => {
@@ -238,6 +232,35 @@ export default function App() {
     }
     setIsLoading(false)
   }, [])
+
+  // Update the active tab's title when the page title changes
+  useEffect(() => {
+    const unsub = window.api.onPageTitleChanged((title) => {
+      const idx = activeTabRef.current
+      if (idx === null || !title) return
+      setTabs((prev) => {
+        const updated = [...prev]
+        updated[idx] = { ...updated[idx], title }
+        return updated
+      })
+    })
+    return () => unsub()
+  }, [])
+
+  // Duplicate current tab as a new pinned tab (triggered via menu / Cmd+D)
+  useEffect(() => {
+    const unsub = window.api.onDuplicateTab(() => {
+      const currentUrl = urlRef.current
+      if (!currentUrl) return
+      const idx = activeTabRef.current
+      const currentTitle = idx !== null ? tabsRef.current[idx]?.title : undefined
+      const newIndex = tabsRef.current.length
+      setTabs((prev) => [...prev, { url: currentUrl, pinned: true, title: currentTitle }])
+      setActiveTab(newIndex)
+      navigateTo(currentUrl)
+    })
+    return () => unsub()
+  }, [navigateTo])
 
   const handleTabClick = useCallback((index: number) => {
     setCustomMode(false)
@@ -619,7 +642,11 @@ export default function App() {
           <div className="nav-chips">
             {tabs.map((tab, index) => {
               let label: string
-              try { label = new URL(tab.url).host.replace(/^www\./, '') } catch { label = tab.url }
+              if (tab.title) {
+                label = tab.title
+              } else {
+                try { label = new URL(tab.url).host.replace(/^www\./, '') } catch { label = tab.url }
+              }
               const isActive = activeTab === index
               return (
                 <button

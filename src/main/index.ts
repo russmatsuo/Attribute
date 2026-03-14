@@ -180,6 +180,11 @@ function createWindow(): void {
   targetView.webContents.on('did-finish-load', () => {
     consoleLogs = []
     injectOverlay()
+    mainWindow?.webContents.send('page-title-changed', targetView.webContents.getTitle())
+  })
+
+  targetView.webContents.on('page-title-updated', (_event, title) => {
+    mainWindow?.webContents.send('page-title-changed', title)
   })
 
   // Inject overlay after SPA navigations (guard in script prevents double-inject)
@@ -783,7 +788,13 @@ function buildMenu(): void {
       submenu: [
         { role: 'minimize' },
         { role: 'zoom' },
-        { role: 'close' }
+        { role: 'close' },
+        { type: 'separator' },
+        {
+          label: 'Duplicate Tab',
+          accelerator: 'CmdOrCtrl+D',
+          click: () => mainWindow?.webContents.send('duplicate-tab')
+        }
       ]
     }
   ]
