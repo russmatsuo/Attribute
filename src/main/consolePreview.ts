@@ -307,8 +307,8 @@ export function updateConsolePreview(logs: string): void {
 
 function updateContent(logs: string): void {
   if (!previewWindow || previewWindow.isDestroyed()) return
-  const escaped = logs.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n')
-  previewWindow.webContents.executeJavaScript(`window.updateLogs && window.updateLogs('${escaped}')`)
+  const serialized = JSON.stringify(logs)
+  previewWindow.webContents.executeJavaScript(`window.updateLogs && window.updateLogs(${serialized})`)
 }
 
 function startCursorTracking(): void {

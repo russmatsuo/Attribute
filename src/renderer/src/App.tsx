@@ -461,13 +461,9 @@ export default function App() {
       // Update local modified state
       setModifiedStyles((prev) => ({ ...prev, [prop]: value }))
 
-      // Escape the values for safe JS injection
-      const escapedProp = prop.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-      const escapedVal = value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-
       // Apply via CDP → __attributeSetStyle__ on the target page
       const res = await window.api.cdpCommand('Runtime.evaluate', {
-        expression: `window.__attributeSetStyle__('${escapedProp}', '${escapedVal}')`,
+        expression: `window.__attributeSetStyle__(${JSON.stringify(prop)}, ${JSON.stringify(value)})`,
         returnByValue: true
       })
       console.log('[Attribute] style change:', prop, value, res)
@@ -477,10 +473,8 @@ export default function App() {
 
   const handleRevertStyle = useCallback(async (prop: string) => {
     const original = initialStyles[prop] ?? ''
-    const escapedProp = prop.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-    const escapedVal = original.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
     await window.api.cdpCommand('Runtime.evaluate', {
-      expression: `window.__attributeSetStyle__('${escapedProp}', '${escapedVal}')`,
+      expression: `window.__attributeSetStyle__(${JSON.stringify(prop)}, ${JSON.stringify(original)})`,
       returnByValue: true
     })
     setModifiedStyles((prev) => {
@@ -491,9 +485,8 @@ export default function App() {
   }, [initialStyles])
 
   const handleTextChange = useCallback(async (text: string) => {
-    const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n')
     await window.api.cdpCommand('Runtime.evaluate', {
-      expression: `window.__attributeSetText__('${escaped}')`,
+      expression: `window.__attributeSetText__(${JSON.stringify(text)})`,
       returnByValue: true
     })
     setSelectedElement((prev) => prev ? { ...prev, textContent: text } : prev)
@@ -584,10 +577,8 @@ export default function App() {
     ;(async () => {
       for (const prop of Object.keys(modifiedStyles)) {
         const original = initialStyles[prop] ?? ''
-        const escapedProp = prop.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-        const escapedVal = original.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
         await window.api.cdpCommand('Runtime.evaluate', {
-          expression: `window.__attributeSetStyle__('${escapedProp}', '${escapedVal}')`,
+          expression: `window.__attributeSetStyle__(${JSON.stringify(prop)}, ${JSON.stringify(original)})`,
           returnByValue: true
         })
       }

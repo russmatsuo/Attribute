@@ -43,13 +43,13 @@ function readSettings(): Record<string, unknown> {
 function writeSetting(key: string, value: unknown): void {
   const settings = readSettings()
   settings[key] = value
-  writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2))
+  writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), { mode: 0o600 })
 }
 
 function deleteSetting(key: string): void {
   const settings = readSettings()
   delete settings[key]
-  writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2))
+  writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), { mode: 0o600 })
 }
 
 // Read the compiled overlay script
@@ -163,6 +163,19 @@ function createWindow(): void {
       updateConsolePreview(consoleLogs.join('\n'))
     }
   })
+
+  // Block navigation to non-http(s) schemes initiated by the target page
+  targetView.webContents.on('will-navigate', (event, navUrl) => {
+    try {
+      const parsed = new URL(navUrl)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        event.preventDefault()
+      }
+    } catch {
+      event.preventDefault()
+    }
+  })
+
 
   // Load a default page
   targetView.webContents.loadURL('http://localhost:3000')
@@ -328,8 +341,19 @@ ipcMain.handle('cdp-command', async (_event, method: string, params?: Record<str
   if (!targetView) return { error: 'No target view' }
   if (!ALLOWED_CDP_METHODS.has(method)) return { error: `CDP method not allowed: ${method}` }
 
+  // Allowlist Runtime.evaluate params to prevent abuse of dangerous options
+  const ALLOWED_EVALUATE_PARAMS = new Set(['expression', 'returnByValue', 'awaitPromise'])
+  const sanitizedParams: Record<string, unknown> = {}
+  if (params) {
+    for (const key of Object.keys(params)) {
+      if (ALLOWED_EVALUATE_PARAMS.has(key)) {
+        sanitizedParams[key] = params[key]
+      }
+    }
+  }
+
   try {
-    const result = await targetView.webContents.debugger.sendCommand(method, params)
+    const result = await targetView.webContents.debugger.sendCommand(method, sanitizedParams)
     return { success: true, result }
   } catch (err) {
     return { success: false, error: String(err) }
@@ -433,14 +457,14 @@ ipcMain.handle('set-viewport-size', (_event, w: number, h: number) => {
 
 // --- Gemini API key helpers (encrypted via safeStorage) ---
 function saveApiKey(key: string): void {
-  if (safeStorage.isEncryptionAvailable()) {
-    const encrypted = safeStorage.encryptString(key)
-    writeSetting('gemini-api-key', encrypted.toString('base64'))
-    // Remove any legacy plaintext key
-    deleteSetting('gemini-api-key-plain')
-  } else {
-    writeSetting('gemini-api-key', key)
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.error('safeStorage encryption not available — refusing to store API key in plaintext')
+    return
   }
+  const encrypted = safeStorage.encryptString(key)
+  writeSetting('gemini-api-key', encrypted.toString('base64'))
+  // Remove any legacy plaintext key
+  deleteSetting('gemini-api-key-plain')
 }
 
 function loadApiKey(): string | undefined {
@@ -809,15 +833,16 @@ app.whenReady().then(() => {
   createWindow()
   buildMenu()
 
-  // Apply CSP to the renderer only (not the BrowserView which loads arbitrary sites).
-  // Injected via <meta> tag so it doesn't affect the target page's default session.
-  if (!is.dev && mainWindow) {
-    mainWindow.webContents.on('did-finish-load', () => {
-      mainWindow?.webContents.executeJavaScript(
-        `document.head.querySelector('meta[http-equiv="Content-Security-Policy"]') || ` +
-        `(() => { const m = document.createElement('meta'); m.httpEquiv = 'Content-Security-Policy'; ` +
-        `m.content = ${JSON.stringify(CSP)}; document.head.prepend(m); })()`
-      )
+  // Apply CSP to the main renderer via response headers (not the BrowserView which loads arbitrary sites).
+  // Using onHeadersReceived ensures CSP is active before any scripts execute (no timing gap).
+  if (mainWindow) {
+    mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [CSP]
+        }
+      })
     })
   }
 })
