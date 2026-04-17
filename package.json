@@ -10,7 +10,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "test": "echo \"No tests yet\"",
+    "test": "tsc -p tsconfig.test.json && node --test test/**/*.test.cjs",
     "dist": "npm run build && electron-builder --mac"
   },
   "build": {
